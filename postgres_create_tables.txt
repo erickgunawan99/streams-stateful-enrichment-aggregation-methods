@@ -1,0 +1,70 @@
+CREATE TABLE enriched_trades (
+  symbol VARCHAR(8) NOT NULL,
+  price DECIMAL(28, 8) NOT NULL,
+  volume INTEGER NOT NULL,
+  trade_timestamp TIMESTAMP NOT NULL,
+  company VARCHAR(20), 
+  sector VARCHAR (20),
+  market_cap BIGINT,
+  info_timestamp TIMESTAMP,
+  trade_value DECIMAL(28, 8),
+  UNIQUE (symbol, trade_timestamp, volume)
+);
+
+ALTER TABLE enriched_trades ADD CONSTRAINT enriched_constraint UNIQUE (symbol, trade_timestamp, volume) ;
+
+  CREATE TABLE sector_metrics(
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    sector VARCHAR(20) NOT NULL,
+    trade_count INTEGER NOT NULL,
+    total_value DECIMAL(28, 8) NOT NULL,
+    avg_price DECIMAL(28, 8) NOT NULL,
+    total_volume BIGINT NOT NULL,
+    UNIQUE (window_start, sector)
+);
+
+# ingestion_time -> used to find latest since upstream is appending updates for efficiency
+
+CREATE INDEX idx_trades_symbol_time ON enriched_trades (symbol, event_timestamp DESC);
+CREATE INDEX idx_metrics_dedupe ON sector_metrics (window_start, sector, ingestion_time DESC);
+
+#cleanup
+DELETE FROM sector_metrics
+WHERE ingestion_time < NOW() - INTERVAL '2 days'
+
+#query for a fast ingenstion table without PK
+SELECT DISTINCT ON (window_start, sector)
+    window_start,
+    sector,
+    trade_count,
+    total_value,
+    avg_price,
+    total_volume
+FROM sector_metrics_raw
+ORDER BY window_start, sector, ingestion_time DESC;
+
+CREATE OR REPLACE VIEW view_sector_latest AS
+SELECT DISTINCT ON (window_start, sector)
+    window_start,
+    window_end,
+    sector,
+    trade_count,
+    total_value,
+    avg_price,
+    ingestion_time
+FROM sector_metrics
+ORDER BY window_start, sector, ingestion_time DESC;
+
+CREATE TABLE IF NOT EXISTS flink_sector_metrics (
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    sector VARCHAR(20) NOT NULL,
+    trade_count INTEGER NOT NULL,
+    total_value DECIMAL(28, 8) NOT NULL,
+    avg_price DECIMAL(28, 8) NOT NULL,
+    total_volume BIGINT NOT NULL,
+    ingestion_time TIMESTAMP DEFAULT NOW(),
+    -- The Primary Key ensures Upserts work correctly for specific windows
+    PRIMARY KEY (window_start, sector)
+);

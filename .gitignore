@@ -1,0 +1,7 @@
+/warehouse
+/spark-checkpoints
+/.venv
+.bsp/
+.metals/
+.vscode/
+flink_checkpoints/

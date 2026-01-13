@@ -1,0 +1,3 @@
+crontab -e
+
+0 2 * * * docker exec -t spark-master spark-submit /opt/spark/jobs/maintenance_delta.py >> /tmp/spark_maintenance.log 2>&1

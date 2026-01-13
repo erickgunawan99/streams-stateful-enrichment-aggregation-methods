@@ -1,0 +1,193 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    networks:
+      - streaming-net
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 6000
+    healthcheck:
+      test: ['CMD', 'cub', 'zk-ready', 'zookeeper:2181', '60']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - streaming-net
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "cub", "kafka-ready", "-b", "localhost:9092", "1", "120"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka_setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - streaming-net
+    command: >
+      bash -c "
+        echo 'Creating topic stock-trades ...' &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic stock-trades --partitions 1 --config cleanup.policy=delete --config retention.ms=86400000 &&
+        echo 'Topic stock-trades created successfully.' &&
+        echo 'Creating topic stock-info ...' &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic stock-info --partitions 1 --config cleanup.policy=delete --config retention.ms=604800000 &&
+        echo 'Topic stock-info created successfully.'
+      "
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "185:185"
+    container_name: spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+      - "4040:4040"  
+    environment:
+      - SPARK_MASTER_HOST=spark-master
+    networks:
+      - streaming-net
+    volumes:
+      - spark-logs:/opt/spark/logs
+      - ./spark-checkpoints:/opt/spark/checkpoints
+      - ./spark-apps:/opt/spark/jobs
+      - ./warehouse:/opt/spark/warehouse
+
+  spark-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spark-worker
+    user: "185:185"
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    environment:
+      - SPARK_WORKER_CORES=3
+    networks:
+      - streaming-net
+    volumes:
+      - spark-logs:/opt/spark/logs
+      - ./spark-checkpoints:/opt/spark/checkpoints
+      - ./spark-apps:/opt/spark/jobs
+      - ./warehouse:/opt/spark/warehouse
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: streaming
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  streamlit:
+    image: python:3.11-slim
+    working_dir: /app
+    command: >
+      sh -c "pip install --upgrade pip  && pip install streamlit pandas plotly psycopg2-binary
+      && streamlit run visualization.py --server.port 8501 --server.address=0.0.0.0"
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./streamlit:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - streaming-net
+  flink-jobmanager:
+    image: flink:1.17.1-java11
+    container_name: flink-jobmanager
+    ports:
+      - "8082:8081" # Flink Web UI (Accessible at localhost:8082)
+    command: jobmanager
+    volumes:
+      - ./flink_checkpoints:/opt/flink/checkpoints
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        execution.checkpointing.interval: 10s
+    networks:
+      - streaming-net
+  
+  flink-taskmanager:
+    image: flink:1.17.1-java11
+    container_name: flink-taskmanager
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    volumes:
+      - ./flink_checkpoints:/opt/flink/checkpoints
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        parallelism.default: 2
+        taskmanager.memory.process.size: 1024mb
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///opt/flink/checkpoint
+    networks:
+      - streaming-net
+
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+  spark-logs:
+  postgres_data:
+
+networks:
+  streaming-net:
+    driver: bridge
