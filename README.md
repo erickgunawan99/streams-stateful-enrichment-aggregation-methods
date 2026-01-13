@@ -135,3 +135,29 @@ graph LR
     ES1 -->|writeStream 1| PG_R
     WA -->|writeStream 2| PG_M
 ```
+
+
+## Instructions
+### Docker
+    docker compose up -d
+### Pyspark submit
+    make sure its root dir
+    docker exec -it spark-master spark-submit --master spark://spark-master:7077 /opt/spark/jobs/enrichment
+    docker exec -it spark-master spark-submit --master spark://spark-master:7077 /opt/spark/jobs/metric
+### Scala spark
+    cd scala-spark/
+    sbt clean package
+    docker cp target/scala-2.12/sparkscalademo_2.12-0.1.jar spark-master:/opt/spark/jobs/
+    cd .. 
+    docker exec -it spark-master spark-submit --master spark://spark-master:7077 --class sparkStreamingEnrich /opt/spark/jobs/sparkscalademo_2.12-0.1.jar
+### Flink submit
+    cd flink-job/
+    mvn clean package
+    docker cp target/flink-enrichment-1.0-SNAPSHOT.jar flink-jobmanager:/opt/flink/
+    cd ..
+    docker exec -it flink-jobmanager flink run -c com.streaming.project.FlinkEnrichmentJob /opt/flink/flink-enrichment-1.0-SNAPSHOT.jar
+## Produce data after job runs
+    ""root dir""
+    python3 mock_data/stock_info.py
+    ""wait a couple seconds to have all enrichment info rows for all symbols to be sent before running the stock_trade. but keep both running for regular info updates""
+    python3 mock_data/stock_trade.py
