@@ -159,5 +159,6 @@ graph LR
 ## Produce data after job runs
     ""root dir""
     python3 mock_data/stock_info.py
-    ""wait a couple seconds to have all enrichment info for all symbols sent up to kafka topic before running the stock_trades mock data. but keep both running for regular info updates""
+    ""wait a couple seconds so that all enrichment info for all symbols to be sent to kafka topic before running the stock_trades mock data"" 
+    ""but keep both mock data generations running for regular info updates""
     python3 mock_data/stock_trades.py
